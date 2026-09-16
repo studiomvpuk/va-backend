@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../core/persistence/prisma.service';
+import { isUniqueViolation } from '../../core/persistence/prisma-errors';
 import { runUnscoped } from '../../core/tenancy/tenant.context';
 import {
   EmailAlreadyRegisteredError,
@@ -108,11 +109,3 @@ const SELECT_VA = {
   revokedAt: true,
 } as const;
 
-function isUniqueViolation(e: unknown): boolean {
-  return (
-    typeof e === 'object' &&
-    e !== null &&
-    'code' in e &&
-    (e as { code?: unknown }).code === 'P2002'
-  );
-}

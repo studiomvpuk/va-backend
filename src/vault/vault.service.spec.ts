@@ -1,4 +1,4 @@
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { cipherConfig } from '../core/crypto/test-config';
 import { VaultService, REVEAL_TTL_SECONDS } from './vault.service';
 import { AesGcmCipher } from '../core/crypto/aes-gcm.cipher';
@@ -10,10 +10,11 @@ import type {
   RevealedCredential,
   StoredCredentialMeta,
 } from './credential.repository';
-import type {
-  ISiteRepository,
-  SiteView,
-  VaRecordForGate,
+import {
+  SiteNameTakenError,
+  type ISiteRepository,
+  type SiteView,
+  type VaRecordForGate,
 } from './site.repository';
 
 const cipher = new AesGcmCipher(cipherConfig({ key: Buffer.alloc(32, 4) }));
@@ -31,6 +32,12 @@ class FakeSites implements ISiteRepository {
     return s ? { ...s } : null;
   }
   async create(i: { name: string; url: string; username: string }) {
+    // The real repository has @@unique([clientId, name]) behind it. A fake that
+    // happily accepts duplicates is a fake that cannot catch the bug where a
+    // duplicate escaped as a 500.
+    if (this.sites.some((x) => x.name === i.name)) {
+      throw new SiteNameTakenError(i.name);
+    }
     const s: SiteView = {
       id: `site${++this.seq}`,
       ...i,
@@ -41,6 +48,9 @@ class FakeSites implements ISiteRepository {
     return { ...s };
   }
   async update(id: string, changes: Partial<SiteView>) {
+    if (changes.name && this.sites.some((x) => x.id !== id && x.name === changes.name)) {
+      throw new SiteNameTakenError(changes.name);
+    }
     const s = this.sites.find((x) => x.id === id)!;
     Object.assign(s, changes);
     return { ...s };
@@ -182,6 +192,63 @@ describe('VaultService', () => {
   const addOldVa = (id = 'va_1') => addVaOnboardedHoursAgo(1, id);
   /** VA arrived before anything was stored → nothing to rotate. */
   const addNewVa = (id = 'va_new') => addVaOnboardedHoursAgo(1, id);
+
+  describe('a site name that is already taken', () => {
+    /*
+     * Found in production: adding a second site called "indeed" threw
+     * PrismaClientKnownRequestError P2002 out of the repository, nothing caught
+     * it, and Nest answered 500 "Internal server error". The Client had made an
+     * ordinary mistake and the app told them it was broken.
+     */
+    it('is a conflict, not a server error', async () => {
+      await vault.createSite({
+        name: 'indeed',
+        url: 'https://uk.indeed.com/',
+        username: 'someone@example.com',
+      });
+
+      await expect(
+        vault.createSite({
+          name: 'indeed',
+          url: 'https://uk.indeed.com/',
+          username: 'someone@example.com',
+        }),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('says which name, and why it matters', async () => {
+      await vault.createSite({ name: 'indeed', url: 'https://x', username: 'a@b.c' });
+      const message = await vault
+        .createSite({ name: 'indeed', url: 'https://x', username: 'a@b.c' })
+        .then(() => '(no error was thrown)')
+        .catch((e: Error) => e.message);
+
+      // The assistant picks between sites by name alone, which is why the
+      // constraint exists — so the message says that rather than just "taken".
+      expect(message).toContain('indeed');
+      expect(message).toMatch(/different name/i);
+    });
+
+    it('lets a different name through', async () => {
+      await vault.createSite({ name: 'indeed', url: 'https://x', username: 'a@b.c' });
+      await expect(
+        vault.createSite({ name: 'LinkedIn', url: 'https://x', username: 'a@b.c' }),
+      ).resolves.toMatchObject({ name: 'LinkedIn' });
+    });
+
+    it('also covers a rename onto an existing name', async () => {
+      await vault.createSite({ name: 'indeed', url: 'https://x', username: 'a@b.c' });
+      const other = await vault.createSite({
+        name: 'LinkedIn',
+        url: 'https://x',
+        username: 'a@b.c',
+      });
+
+      await expect(
+        vault.updateSite(other.id, { name: 'indeed' }),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+  });
 
   describe('the Client never gets a password back', () => {
     it('is absent from the sites list', async () => {

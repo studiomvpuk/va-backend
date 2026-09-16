@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../core/persistence/prisma.service';
+import { isUniqueViolation } from '../../core/persistence/prisma-errors';
 import { stampedByTenant } from '../../core/tenancy/tenant-stamped';
 import { normaliseQuestion } from './qa-matcher';
 import type {
@@ -91,6 +92,3 @@ export class PrismaQaBankRepository implements IQaBankRepository {
   }
 }
 
-function isUniqueViolation(e: unknown): boolean {
-  return (e as { code?: string })?.code === 'P2002';
-}

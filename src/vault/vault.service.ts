@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -11,7 +12,12 @@ import {
   type ICredentialWriter,
   type RevealedCredential,
 } from './credential.repository';
-import { SITE_REPOSITORY, type ISiteRepository, type SiteView } from './site.repository';
+import {
+  SITE_REPOSITORY,
+  SiteNameTakenError,
+  type ISiteRepository,
+  type SiteView,
+} from './site.repository';
 import {
   CREDENTIAL_CIPHER,
   type ICredentialCipher,
@@ -68,7 +74,7 @@ export class VaultService {
     url: string;
     username: string;
   }): Promise<SiteWithVaultState> {
-    const site = await this.sites.create(input);
+    const site = await this.withNameConflict(() => this.sites.create(input));
     return { ...site, hasPassword: false, rotatedAt: null };
   }
 
@@ -77,7 +83,7 @@ export class VaultService {
     changes: { name?: string; url?: string; username?: string },
   ): Promise<SiteWithVaultState> {
     await this.requireSite(id);
-    const site = await this.sites.update(id, changes);
+    const site = await this.withNameConflict(() => this.sites.update(id, changes));
     const meta = await this.credentials.findMeta(id);
     return {
       ...site,
@@ -239,6 +245,27 @@ export class VaultService {
     const site = await this.sites.find(id);
     if (!site) throw new NotFoundException('Site not found');
     return site;
+  }
+  /**
+   * 409, not 500.
+   *
+   * Two sites with the same name are indistinguishable to the assistant who has
+   * to pick one, so the constraint is deliberate. What was not deliberate was
+   * reporting it as a server error: the Client retyped a name they already had
+   * and the app told them something had broken.
+   */
+  private async withNameConflict<T>(run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (e) {
+      if (e instanceof SiteNameTakenError) {
+        throw new ConflictException(
+          `${e.message}. Give this one a different name — the assistant picks ` +
+            'between them by name alone.',
+        );
+      }
+      throw e;
+    }
   }
 }
 
