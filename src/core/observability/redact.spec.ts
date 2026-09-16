@@ -55,10 +55,10 @@ describe('redactString', () => {
     });
 
     it('redacts the password inside a connection string, keeping the rest', () => {
-      const out = redactString('postgres://app:hunter2hunter2@db.internal:5432/jaa');
+      const out = redactString('postgres://app:hunter2hunter2@db.internal:5432/understudy');
       expect(out).not.toContain('hunter2');
       // The host and database are what make the error diagnosable.
-      expect(out).toContain('db.internal:5432/jaa');
+      expect(out).toContain('db.internal:5432/understudy');
       expect(out).toContain('postgres://app:');
     });
 

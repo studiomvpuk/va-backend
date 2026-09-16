@@ -10,7 +10,14 @@ import type { AppConfigService } from '../../core/config/app-config.service';
  * matters: an XSS that can read tokens gets only a 15-minute access token, not
  * a week of access.
  */
-export const REFRESH_COOKIE = 'jaa_refresh';
+/*
+ * Renaming this ends every live session — an old `jaa_refresh` cookie no longer
+ * matches, so the browser sends a credential the API will not read and the user
+ * is signed out. Done before launch, when the set of affected sessions is
+ * empty. After launch the same change needs a window where both names are
+ * accepted, and this is the note that says so.
+ */
+export const REFRESH_COOKIE = 'understudy_refresh';
 export const REFRESH_COOKIE_PATH = '/v1/auth/refresh';
 
 export function refreshCookieOptions(

@@ -10,6 +10,23 @@ import { AppConfigService } from '../config/app-config.service';
 import type { CipherEnvelope, ICredentialCipher } from './cipher.interface';
 
 const ALGORITHM = 'aes-256-gcm';
+
+/**
+ * The HKDF domain separator. DO NOT CHANGE IT — not to match a rename, not to
+ * tidy it up.
+ *
+ * It is an input to every data key this class has ever derived, so it is baked
+ * into every ciphertext in the database. Change it and every stored credential,
+ * every BYOK key and every sensitive profile value stops decrypting — not with
+ * a clear error, but as an authentication failure, which reads like tampering
+ * and sends whoever is on call looking for an attacker.
+ *
+ * It deliberately kept its original value through the rename to Understudy. The
+ * product name is branding; this is a cryptographic constant that happens to
+ * look like one. If it ever genuinely has to change, that is a key rotation
+ * with a re-encryption pass, not an edit.
+ */
+const HKDF_DOMAIN = 'jaa';
 const IV_BYTES = 12; // 96 bits — the size GCM is specified for
 const KEY_BYTES = 32;
 
@@ -131,7 +148,7 @@ export class AesGcmCipher implements ICredentialCipher {
       throw new UnknownKeyVersionError(keyVersion);
     }
     return Buffer.from(
-      hkdfSync('sha256', masterKey, salt, `jaa:v${keyVersion}`, KEY_BYTES),
+      hkdfSync('sha256', masterKey, salt, `${HKDF_DOMAIN}:v${keyVersion}`, KEY_BYTES),
     );
   }
 }

@@ -2,7 +2,12 @@ import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { Queue, Worker, type ConnectionOptions } from 'bullmq';
 import type { IJobQueue, JobName, JobPayloadMap } from './job-queue';
 
-const QUEUE_NAME = 'jaa';
+/*
+ * The Redis key prefix for every job. Changing it strands whatever is already
+ * queued under the old prefix: those keys stay in Redis, and no worker reads
+ * them. Harmless before launch; after launch, drain the old queue first.
+ */
+const QUEUE_NAME = 'understudy';
 
 /**
  * The production binding. Redis-backed, survives a restart, retries.

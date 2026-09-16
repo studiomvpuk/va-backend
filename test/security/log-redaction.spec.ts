@@ -25,7 +25,7 @@ const SEEDED = {
   sitePassword: 'correcthorsebatterystaple',
   sensitiveValue: '14 Wilmslow Road, Manchester M14 5TQ',
   refreshToken: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ2YS0xIn0.c2lnbmF0dXJl',
-  databaseUrl: 'postgres://app:Pa55word!Long@db.internal:5432/jaa',
+  databaseUrl: 'postgres://app:Pa55word!Long@db.internal:5432/understudy',
 };
 
 describe('nothing secret reaches the log sink', () => {
@@ -125,7 +125,7 @@ describe('nothing secret reaches the log sink', () => {
     logger.log({
       method: 'POST',
       path: '/v1/auth/refresh',
-      headers: { cookie: `jaa_refresh=${SEEDED.refreshToken}`, 'user-agent': 'curl/8' },
+      headers: { cookie: `understudy_refresh=${SEEDED.refreshToken}`, 'user-agent': 'curl/8' },
     });
     expectNothingLeaked();
   });
@@ -163,7 +163,7 @@ describe('nothing secret reaches the error reporter', () => {
       request: {
         url: `https://api.example.com/v1/x?token=${SEEDED.refreshToken}`,
         headers: { authorization: `Bearer ${SEEDED.refreshToken}`, 'x-request-id': 'req-1' },
-        cookies: { jaa_refresh: SEEDED.refreshToken },
+        cookies: { understudy_refresh: SEEDED.refreshToken },
         data: { password: SEEDED.sitePassword },
       },
       extra: { decrypted: SEEDED.sitePassword },
@@ -196,7 +196,7 @@ describe('nothing secret reaches the error reporter', () => {
 
   it('sends no cookies at all', () => {
     // The refresh cookie is a live credential, not a hint of one.
-    const scrubbed = scrubEvent({ request: { cookies: { jaa_refresh: 'anything' } } });
+    const scrubbed = scrubEvent({ request: { cookies: { understudy_refresh: 'anything' } } });
     expect(scrubbed.request?.cookies).toEqual({});
   });
 });

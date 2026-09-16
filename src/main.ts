@@ -59,7 +59,7 @@ async function bootstrap(): Promise<void> {
     const doc = SwaggerModule.createDocument(
       app,
       new DocumentBuilder()
-        .setTitle('Job Application Assistant API')
+        .setTitle('Understudy API')
         .setVersion('0.1.0')
         .addBearerAuth()
         .build(),
@@ -70,8 +70,17 @@ async function bootstrap(): Promise<void> {
   app.enableShutdownHooks();
 
   const port = config.get('PORT');
-  await app.listen(port);
-  logger.log(`API listening on :${port} (${config.get('NODE_ENV')})`);
+  /*
+   * Bind every interface, not just loopback.
+   *
+   * A container platform reaches the process from outside the container. A
+   * server listening only on 127.0.0.1 accepts nothing from the host network,
+   * and the symptom is not a crash — it is a healthy-looking process that every
+   * request times out against, which is a much worse afternoon than a boot
+   * failure. Explicit because the default has changed between Node versions.
+   */
+  await app.listen(port, '0.0.0.0');
+  logger.log(`API listening on 0.0.0.0:${port} (${config.get('NODE_ENV')})`);
 }
 
 /**

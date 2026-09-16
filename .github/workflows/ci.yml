@@ -12,15 +12,15 @@ jobs:
         image: pgvector/pgvector:pg16
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: jaa_test
+          POSTGRES_DB: understudy_test
         options: >-
           --health-cmd pg_isready --health-interval 10s
           --health-timeout 5s --health-retries 5
         ports: ['5432:5432']
     env:
       NODE_ENV: test
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/jaa_test
-      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/jaa_test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/understudy_test
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/understudy_test
       # Test-only values. Real environments supply their own, and each differs.
       ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
       JWT_SECRET: test-secret-that-is-at-least-32-chars

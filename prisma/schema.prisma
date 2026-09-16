@@ -1,4 +1,4 @@
-// Job Application Assistant — data model (PRD §4)
+// Understudy — data model (PRD §4)
 //
 // Every model carrying `clientId` MUST also be registered in
 // src/core/tenancy/tenant-scoped.models.ts. The architecture test in
@@ -6,7 +6,7 @@
 
 generator client {
   provider        = "prisma-client-js"
-  previewFeatures = ["postgresqlExtensions"]
+  previewFeatures = ["postgresqlExtensions", "driverAdapters", "queryCompiler"]
 }
 
 datasource db {
