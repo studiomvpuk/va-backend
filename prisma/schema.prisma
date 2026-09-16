@@ -1,0 +1,612 @@
+// Job Application Assistant — data model (PRD §4)
+//
+// Every model carrying `clientId` MUST also be registered in
+// src/core/tenancy/tenant-scoped.models.ts. The architecture test in
+// test/architecture/tenant-scoping.spec.ts fails CI if the two disagree.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  directUrl  = env("DIRECT_URL")
+  extensions = [vector]
+}
+
+// ---------------------------------------------------------------- tenant root
+
+model Client {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  fullName     String
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  settings      ClientSettings?
+  narrative     ExperienceNarrative?
+  profileFields ProfileField[]
+  sites         Site[]
+  targetRoles   TargetRole[]
+  vas           VirtualAssistant[]
+  applications  Application[]
+  gaps          KnowledgeGap[]
+  qaBank        QaBankEntry[]
+  threads       Thread[]
+  notifications Notification[]
+  auditEvents   AuditEvent[]
+}
+
+model ClientSettings {
+  id       String @id @default(cuid())
+  clientId String @unique
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  gapMode     GapMode @default(GUESS_AND_PROCEED)
+  minFitScore Decimal @default(6.0) @db.Decimal(3, 1)
+
+  byokEnabled Boolean @default(false)
+  // Keys themselves live in ProviderKey, encrypted. Nothing here holds one.
+
+  whatsappEnabled Boolean @default(false)
+  whatsappNumber  String?
+
+  updatedAt DateTime @updatedAt
+}
+
+enum GapMode {
+  GUESS_AND_PROCEED
+  ASK_FIRST
+}
+
+// ------------------------------------------------------------------- profile
+// General and sensitive values live in SEPARATE tables, deliberately.
+// SensitiveValue's repository is provided only inside DisclosureModule and is
+// not exported. There is no findMany on it. (PRD §2.5)
+
+model ProfileField {
+  id       String @id @default(cuid())
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  key        String // "current_role", "home_address"
+  label      String
+  visibility Visibility @default(GENERAL)
+  value      String?    @db.Text // NULL when visibility = SENSITIVE
+
+  sensitive SensitiveValue?
+  updatedAt DateTime        @updatedAt
+
+  @@unique([clientId, key])
+  @@index([clientId])
+}
+
+enum Visibility {
+  GENERAL
+  SENSITIVE
+}
+
+model SensitiveValue {
+  id             String       @id @default(cuid())
+  clientId       String
+  profileFieldId String       @unique
+  profileField   ProfileField @relation(fields: [profileFieldId], references: [id], onDelete: Cascade)
+
+  ciphertext Bytes
+  iv         Bytes
+  authTag    Bytes
+  keyVersion Int   @default(1)
+
+  updatedAt DateTime @updatedAt
+
+  @@index([clientId])
+}
+
+model ExperienceNarrative {
+  id       String @id @default(cuid())
+  clientId String @unique
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  body      String   @db.Text
+  updatedAt DateTime @updatedAt
+}
+
+// ------------------------------------------------------- targeting and vault
+
+model Site {
+  id       String @id @default(cuid())
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  name     String // "Indeed UK"
+  url      String
+  username String // shown to the Client; not a secret
+  status   SiteStatus @default(NOT_CONNECTED)
+
+  credential   Credential?
+  applications Application[]
+  createdAt    DateTime      @default(now())
+
+  @@unique([clientId, name])
+  @@index([clientId])
+}
+
+enum SiteStatus {
+  NOT_CONNECTED
+  CONNECTED
+}
+
+model Credential {
+  id       String @id @default(cuid())
+  clientId String
+  siteId   String @unique
+  site     Site   @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  ciphertext Bytes
+  iv         Bytes
+  authTag    Bytes
+  keyVersion Int   @default(1)
+
+  rotatedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  reveals          CredentialReveal[]
+  acknowledgements CredentialAcknowledgement[]
+
+  @@index([clientId])
+}
+
+/// One reveal of one credential to one VA.
+///
+/// Exists for two reasons beyond the audit trail, which AuditEvent already
+/// covers. First, rotation needs to find reveals that are still on screen so it
+/// can mark them stale — a VA pasting a password the Client rotated 20 seconds
+/// ago gets a login failure they cannot explain. Second, "which credentials are
+/// live right now" is a question the Client dashboard should be able to answer.
+model CredentialReveal {
+  id           String     @id @default(cuid())
+  clientId     String
+  credentialId String
+  credential   Credential @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+  vaId         String
+
+  /// When the client-side auto-hide expires. Not a security control on its own —
+  /// the plaintext has already left the server — but it bounds how long a value
+  /// sits on a screen someone might walk past.
+  expiresAt   DateTime
+  /// Set by a rotation that happened while this reveal was still live.
+  supersededAt DateTime?
+
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  @@index([clientId, createdAt])
+  @@index([credentialId, expiresAt])
+}
+
+/// The Client's explicit, logged decision to share an un-rotated password with a
+/// specific VA (PRD §7.4).
+///
+/// Scoped to the pair, not to the credential, so onboarding a second VA asks
+/// again — the first VA's acknowledgement says nothing about the second.
+model CredentialAcknowledgement {
+  id           String     @id @default(cuid())
+  clientId     String
+  credentialId String
+  credential   Credential @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+  vaId         String
+
+  acknowledgedAt DateTime @default(now())
+
+  @@unique([credentialId, vaId])
+  @@index([clientId])
+}
+
+/// A Client's own Anthropic or OpenAI key (BYOK).
+///
+/// Encrypted with the same cipher as site credentials, and WRITE-ONLY: no route
+/// returns the ciphertext or the plaintext, to anyone, including the Client who
+/// set it. The only consumer is the server-side keyring at request time
+/// (Phase 4).
+model ProviderKey {
+  id       String   @id @default(cuid())
+  clientId String
+  provider Provider
+
+  ciphertext Bytes
+  iv         Bytes
+  authTag    Bytes
+  keyVersion Int    @default(1)
+
+  /// Shown in the UI so the Client can tell which key is stored without the
+  /// key itself ever coming back. Last four characters only.
+  hint String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([clientId, provider])
+  @@index([clientId])
+}
+
+enum Provider {
+  ANTHROPIC
+  OPENAI
+}
+
+model TargetRole {
+  id       String @id @default(cuid())
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  title    String
+  criteria String? @db.Text
+
+  @@index([clientId])
+}
+
+// ------------------------------------------------------------------------ VA
+
+model VirtualAssistant {
+  id       String @id @default(cuid())
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  email        String
+  fullName     String
+  passwordHash String?
+  inviteToken  String?   @unique
+  inviteExpiry DateTime?
+
+  agreement    Agreement?
+  threads      Thread[]
+  applications Application[]
+  gaps         KnowledgeGap[]
+
+  createdAt DateTime  @default(now())
+  revokedAt DateTime?
+
+  @@unique([clientId, email])
+  @@index([clientId])
+}
+
+model Agreement {
+  id       String           @id @default(cuid())
+  clientId String
+  vaId     String           @unique
+  va       VirtualAssistant @relation(fields: [vaId], references: [id], onDelete: Cascade)
+
+  documentVersion String
+  // sha256 of the exact text shown, so what was signed is provable rather than
+  // merely asserted.
+  documentHash    String
+  signedName      String
+  signedAt        DateTime
+  ipAddress       String
+  userAgent       String
+
+  @@index([clientId])
+}
+
+// ------------------------------------------------------ the application loop
+
+model Application {
+  id       String @id @default(cuid())
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  vaId   String?
+  va     VirtualAssistant? @relation(fields: [vaId], references: [id], onDelete: SetNull)
+  siteId String?
+  site   Site?             @relation(fields: [siteId], references: [id], onDelete: SetNull)
+
+  companyName    String
+  roleTitle      String
+  jobDescription String @db.Text
+
+  fitScore         Decimal?          @db.Decimal(3, 1)
+  fitReasoning     String?           @db.Text
+  seniorityVerdict SeniorityVerdict?
+
+  status    AppStatus @default(SCORED)
+  appliedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  drafts  Draft[]
+  gaps    KnowledgeGap[]
+  prepDoc PrepDocument?
+
+  @@index([clientId, status])
+  @@index([clientId, createdAt])
+}
+
+enum AppStatus {
+  SCORED
+  SKIPPED
+  IN_PROGRESS
+  BLOCKED
+  APPLIED
+  INTERVIEW
+  REJECTED
+  OFFER
+}
+
+enum SeniorityVerdict {
+  UNDER_LEVELLED
+  MATCHED
+  OVER_LEVELLED
+}
+
+model Draft {
+  id            String      @id @default(cuid())
+  clientId      String
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  kind         DraftKind
+  questionText String?   @db.Text
+  body         String    @db.Text
+
+  // "claude_direct" | "gpt_then_claude" — the §5.5a path taken, recorded so the
+  // routing decision is auditable rather than inferred.
+  orchestrationPath String
+  // Which prompt template produced this. Open item 3 in the PRD.
+  promptVersion     String
+  atsChecked        Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([clientId, applicationId])
+}
+
+enum DraftKind {
+  CV
+  COVER_LETTER
+  SCREENING_ANSWER
+}
+
+model KnowledgeGap {
+  id            String      @id @default(cuid())
+  clientId      String
+  client        Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  vaId          String
+  va            VirtualAssistant @relation(fields: [vaId], references: [id], onDelete: Cascade)
+
+  questionText     String  @db.Text
+  bestEffortAnswer String? @db.Text // null when the Client's mode is ASK_FIRST
+  clientAnswer     String? @db.Text
+
+  resolvedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([clientId, resolvedAt])
+}
+
+model QaBankEntry {
+  id       String @id @default(cuid())
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  questionText String @db.Text
+  // normaliseQuestion(questionText). Stored so the database — not application
+  // code remembering to check first — is what guarantees a Client cannot end up
+  // with two entries for the same question giving different answers. Which of
+  // the two a future application picked would otherwise be arbitrary.
+  questionKey  String @db.Text
+  answer       String @db.Text
+  // Float[], not pgvector's `Unsupported("vector(1536)")`, and the reason is
+  // tenancy rather than taste. Prisma cannot read or write an Unsupported
+  // column through its client, so a vector column forces $queryRaw — and raw
+  // SQL bypasses the tenant-scoping extension, putting a hand-written
+  // `WHERE clientId` on the one table that holds the Client's own answers.
+  // That is the exact mistake the extension exists to make impossible.
+  //
+  // What pgvector buys is an ANN index, which matters at millions of rows. A
+  // Q&A bank is per-Client and realistically tens to low hundreds of entries,
+  // so ranking happens in Node against a pure, fully tested function instead.
+  //
+  // Migrate when a single Client's bank passes ~5,000 entries or lookup p95
+  // passes 50ms:
+  //   ALTER TABLE "QaBankEntry" ALTER COLUMN embedding TYPE vector(1536)
+  //     USING embedding::vector(1536);
+  // The width is already fixed at 1536 by IEmbedder.dimensions so that cast
+  // cannot fail on existing rows.
+  embedding Float[]
+  // Which embedder produced `embedding`. Vectors from different models are not
+  // comparable, so a row tagged with anything other than the embedder in use is
+  // treated as having no vector at all and falls back to exact matching. This
+  // is what makes swapping embedders safe without a backfill.
+  embeddingModel String?
+  sourceGapId  String?
+
+  confirmedAt DateTime @default(now())
+
+  @@unique([clientId, questionKey])
+  @@index([clientId])
+}
+
+// ---------------------------------------------------------------- conversation
+
+model Thread {
+  id       String @id @default(cuid())
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  vaId     String
+  va       VirtualAssistant @relation(fields: [vaId], references: [id], onDelete: Cascade)
+
+  applicationId String?
+  messages      Message[]
+  createdAt     DateTime  @default(now())
+
+  @@index([clientId, vaId])
+}
+
+model Message {
+  id       String @id @default(cuid())
+  clientId String
+  threadId String
+  thread   Thread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  role     MsgRole
+  body     String  @db.Text
+  flagged  Boolean @default(false)
+  gapId    String?
+
+  // No imageUrl. A screenshot of a posting is passed to the vision provider and
+  // discarded — nothing is stored, so §7.2's "served from a separate origin"
+  // is satisfied by there being no artefact rather than by an isolated bucket.
+  //
+  // The column existed unused from the Phase 0 data model and was removed in
+  // Phase 10: a field named imageUrl is an invitation to start storing them,
+  // and doing that needs the origin-isolation requirement answered first rather
+  // than discovered afterwards. The §7 sweep asserts it stays absent.
+
+  createdAt DateTime @default(now())
+
+  @@index([clientId, threadId, createdAt])
+}
+
+enum MsgRole {
+  VA
+  AI
+  SYSTEM
+}
+
+// ------------------------------------------------- prep docs & notifications
+
+model PrepDocument {
+  id            String      @id @default(cuid())
+  clientId      String
+  applicationId String      @unique
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  // The row is created the moment INTERVIEW is set, empty and PENDING, rather
+  // than when the research finishes. Without it the screen cannot tell "nobody
+  // asked for this" from "it is being written" from "the job died", and a
+  // failed research job leaves the Client watching a spinner forever.
+  status        PrepStatus @default(PENDING)
+  failureReason String?
+
+  companyBackground String? @db.Text
+  likelyQuestions   Json    @default("[]")
+  talkingPoints     Json    @default("[]")
+  // Every URL the background paragraph drew on. A claim with no source here is
+  // a claim that should not have been written.
+  sources           Json    @default("[]")
+
+  generatedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // Client-only. No VA-reachable route resolves this model, and a VA token on
+  // any prep-doc path returns 404 rather than 403 — existence is not disclosed.
+  @@index([clientId])
+}
+
+enum PrepStatus {
+  PENDING
+  READY
+  // The research failed. The Client sees why, and can ask for a retry — which
+  // is a better outcome than a document quietly full of nothing.
+  FAILED
+}
+
+model Notification {
+  id       String @id @default(cuid())
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  kind     NotifKind
+  title    String
+  body     String    @db.Text
+  linkPath String?
+
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([clientId, readAt])
+}
+
+enum NotifKind {
+  KNOWLEDGE_GAP
+  CREDENTIAL_REVEAL
+  AGREEMENT_SIGNED
+  RATE_LIMIT
+  SYSTEM
+}
+
+// ------------------------------------------------------- auth primitives
+// RefreshToken is DELIBERATELY NOT tenant-scoped and carries no clientId.
+//
+// It is read before any tenant is known — the token is what tells you which
+// tenant the caller belongs to. Giving it a clientId would either force a hole
+// in the isolation mechanism (a "system" escape hatch anyone could call) or a
+// bootstrapping deadlock. Instead it identifies its subject directly, and the
+// tenant is resolved from that subject afterwards.
+
+model RefreshToken {
+  id String @id @default(cuid())
+
+  // sha256 of the token. The token itself is never stored, so a database dump
+  // does not hand over live sessions.
+  tokenHash String @unique
+
+  // Rotation family. Every refresh issues a new token in the same family; if a
+  // token is ever presented twice, the whole family is revoked (see §Auth).
+  familyId String
+
+  subjectType SubjectType
+  subjectId   String
+
+  expiresAt DateTime
+  usedAt    DateTime?
+  revokedAt DateTime?
+
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([familyId])
+  @@index([subjectType, subjectId])
+  @@index([expiresAt])
+}
+
+enum SubjectType {
+  CLIENT
+  VA
+}
+
+// --------------------------------------------- audit: append-only, forever
+
+model AuditEvent {
+  id       String @id @default(cuid())
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  actorType   ActorType
+  actorId     String
+  action      String // "credential.revealed", "sensitive.disclosed"
+  subjectType String
+  subjectId   String
+  metadata    Json
+  ipAddress   String?
+
+  createdAt DateTime @default(now())
+
+  @@index([clientId, createdAt])
+  @@index([clientId, action])
+}
+
+enum ActorType {
+  CLIENT
+  VA
+  SYSTEM
+}

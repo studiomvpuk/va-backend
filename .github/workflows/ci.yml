@@ -1,0 +1,43 @@
+name: api-ci
+
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: jaa_test
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+        ports: ['5432:5432']
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/jaa_test
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/jaa_test
+      # Test-only values. Real environments supply their own, and each differs.
+      ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      JWT_SECRET: test-secret-that-is-at-least-32-chars
+      JWT_REFRESH_SECRET: test-refresh-secret-at-least-32-chars
+      WEB_ORIGIN: http://localhost:3000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npx prisma db push --skip-generate
+      # THE ISOLATION TEST. Two Clients, every list endpoint, zero leakage.
+      # Blocking, forever — if this is red, nothing ships.
+      - run: npm run test:integration
+      # Blocking, forever: a known-vulnerable dependency does not ship.
+      - run: npm audit --audit-level=high

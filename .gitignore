@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+# Secrets. The pattern is `.env*`, not `.env` — a bare `.env` leaves
+# `.env.local`, `.env.production`, `.env.backup` and every other variant
+# tracked, which is how a key reaches a public repository. Only the example,
+# which holds no values, is exempt.
+.env
+.env.*
+!.env.example
+*.log
+openapi.json
