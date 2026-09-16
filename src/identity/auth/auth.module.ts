@@ -37,6 +37,18 @@ import { AccountsModule } from '../accounts/accounts.module';
     { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_GUARD, useClass: TenantGuard },
   ],
-  exports: [AuthService, TokenService],
+  /*
+   * PASSWORD_HASHER is exported because VaService hashes an assistant's chosen
+   * password when they accept an invitation — the same operation AuthService
+   * performs at sign-up, and deliberately the same implementation, so an
+   * assistant's password is never stored under weaker parameters than a
+   * Client's.
+   *
+   * It was missing here, and nothing caught it: the unit tests inject a fake
+   * hasher directly, so the graph was only ever assembled for the first time in
+   * production, where it failed to boot. `test/architecture/module-graph.spec.ts`
+   * now compiles the real AppModule and fails on any unresolvable provider.
+   */
+  exports: [AuthService, TokenService, PASSWORD_HASHER],
 })
 export class AuthModule {}

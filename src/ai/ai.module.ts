@@ -39,7 +39,15 @@ const searchProvider = {
 @Module({
   imports: [KeyringModule, SettingsModule],
   providers: [
-    { provide: HTTP_TRANSPORT, useClass: FetchTransport },
+    /*
+     * useFactory, not useClass. FetchTransport's only constructor parameter is
+     * a timeout with a default value, and `useClass` makes Nest try to *inject*
+     * it — a `number` has no provider token, so the graph fails to resolve.
+     * Nest never applies TypeScript default parameters; it always constructs
+     * with what it resolved. A factory calls the constructor the ordinary way,
+     * so the default applies.
+     */
+    { provide: HTTP_TRANSPORT, useFactory: () => new FetchTransport() },
     ProviderFactory,
     searchProvider,
   ],
